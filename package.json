@@ -1,0 +1,18 @@
+{
+  "name": "x-follower-analyzer",
+  "version": "1.0.0",
+  "description": "Analyze and manage X followers",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "tsc && node dist/index.js",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "puppeteer": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^16.18.113",
+    "typescript": "^4.5.2"
+  }
+}
