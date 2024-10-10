@@ -98,9 +98,6 @@ export class XBotAPI {
         } catch (error) {
           console.log('No 2FA required or 2FA process completed.');
         }
-
-        console.log('Waiting for navigation after login...');
-        await this.page.waitForNavigation({ waitUntil: 'networkidle0' });
         console.log('Logged in successfully');
         clearTimeout(timeoutId);
         resolve();
@@ -120,7 +117,11 @@ export class XBotAPI {
   async analyzeFollowers(): Promise<void> {
     if (!this.page) throw new Error('Not logged in');
 
-    await this.page.goto(`https://x.com/${this.username}/followers`, { timeout: 60000 });
+    console.log(`Navigating to followers page for ${this.username}...`);
+    await this.page.goto(`https://twitter.com/${this.username}/followers`, { timeout: 60000 });
+    console.log('Followers page loaded');
+
+    console.log('Starting to scroll to bottom...');
     const scrollResult = await this.scrollToBottom();
     console.log(scrollResult);
 
@@ -128,19 +129,15 @@ export class XBotAPI {
     console.log(`Found ${followers.length} followers`);
 
     for (const follower of followers) {
+      console.log(`Analyzing follower: ${follower}`);
       const info = await this.getFollowerInfo(follower);
       const action = this.analyzer.analyzeFollower(info);
 
       if (action === 'block') {
-        const shouldBlock = await this.promptYesOrNo(`Block ${follower}?`);
-        if (shouldBlock) {
-          await this.blockFollower(follower);
-        }
+        await this.blockFollower(follower);
       } else if (action === 'remove') {
-        const shouldRemove = await this.promptYesOrNo(`Remove ${follower}?`);
-        if (shouldRemove) {
-          await this.removeFollower(follower);
-        }
+        // Implement remove functionality if needed
+        console.log(`Would remove follower: ${follower}`);
       }
     }
 
@@ -169,54 +166,85 @@ export class XBotAPI {
   }
 
   private async getFollowers(): Promise<string[]> {
-    const followers = await this.page!.$$('div[data-testid="UserCell"] a[role="link"]');
-    return Promise.all(followers.map(async (follower) => {
-      const username = await follower.evaluate(el => el.textContent);
-      return username ? username.replace('@', '') : '';
-    }));
+    console.log('Fetching followers...');
+    const followers: string[] = [];
+
+    const userCells = await this.page!.$$('[data-testid="UserCell"]');
+    
+    for (const userCell of userCells) {
+      const usernameElement = await userCell.$('div[dir="ltr"] span');
+      if (usernameElement) {
+        const username = await usernameElement.evaluate(el => el.textContent);
+        if (username) {
+          followers.push(username.replace('@', ''));
+        }
+      }
+    }
+
+    console.log(`Found ${followers.length} followers`);
+    return followers;
   }
 
   private async getFollowerInfo(username: string): Promise<FollowerInfo> {
-    await this.page!.hover(`a[href="/${username}"]`);
-    await this.page!.waitForSelector('div[data-testid="HoverCard"]');
+    const userCell = await this.page!.$(`[data-testid="UserCell"]:has(a[href="/${username}"])`);
+    if (!userCell) throw new Error(`UserCell not found for ${username}`);
 
-    const card = await this.page!.$('div[data-testid="HoverCard"]');
-    if (!card) throw new Error('HoverCard not found');
+    const displayNameElement = await userCell.$('div[dir="ltr"] > div:first-child');
+    const handleElement = await userCell.$('div[dir="ltr"] > div:nth-child(2)');
+    const bioElement = await userCell.$('div[dir="auto"]');
 
-    const nameElement = await card.$('span');
-    const name = nameElement ? await nameElement.evaluate(el => el.textContent || '') : '';
+    const displayName = displayNameElement ? await displayNameElement.evaluate(el => el.textContent) : '';
+    const handle = handleElement ? await handleElement.evaluate(el => el.textContent) : '';
+    const bio = bioElement ? await bioElement.evaluate(el => el.textContent) : '';
 
-    const counts = await card.$$('span[data-testid="UserCell-number"]');
-    const followerCount = counts[0] ? await counts[0].evaluate(el => parseInt(el.textContent?.replace(',', '') || '0', 10)) : 0;
-    const followingCount = counts[1] ? await counts[1].evaluate(el => parseInt(el.textContent?.replace(',', '') || '0', 10)) : 0;
-
-    const createdAtElement = await card.$('span[data-testid="UserCell-date"]');
-    const createdAt = createdAtElement ? await createdAtElement.evaluate(el => el.textContent || '') : '';
+    // Other info like follower count, following count, etc. would need to be fetched differently
+    // as they're not directly available in the UserCell
 
     return {
       username,
-      name,
-      followerCount,
-      followingCount,
-      createdAt: new Date(createdAt),
-      tweetCount: 0, // Placeholder, replace with actual data
-      retweetRatio: 0, // Placeholder, replace with actual data
-      linkRatio: 0, // Placeholder, replace with actual data
-      averageHashtagsPerTweet: 0, // Placeholder, replace with actual data
-      hasDefaultProfileImage: false, // Placeholder, replace with actual data
-      bio: '', // Placeholder, replace with actual data
+      name: displayName || '',
+      followerCount: 0, // Placeholder
+      followingCount: 0, // Placeholder
+      createdAt: new Date(), // Placeholder
+      tweetCount: 0, // Placeholder
+      retweetRatio: 0, // Placeholder
+      linkRatio: 0, // Placeholder
+      averageHashtagsPerTweet: 0, // Placeholder
+      hasDefaultProfileImage: false, // Placeholder
+      bio: bio || '',
     };
   }
 
   private async blockFollower(username: string): Promise<void> {
-    await this.page!.click(`a[href="/${username}"]`);
-    await this.page!.waitForSelector('div[data-testid="userActions"]');
-    await this.page!.click('div[data-testid="userActions"]');
-    await this.page!.waitForSelector('div[data-testid="block"]');
-    await this.page!.click('div[data-testid="block"]');
-    await this.page!.waitForSelector('div[data-testid="confirmationSheetConfirm"]');
-    await this.page!.click('div[data-testid="confirmationSheetConfirm"]');
-    console.log(`Blocked follower: ${username}`);
+    const userCell = await this.page!.$(`[data-testid="UserCell"]:has(a[href="/${username}"])`);
+    if (!userCell) throw new Error(`UserCell not found for ${username}`);
+
+    const moreButton = await userCell.$('button[aria-label="More"]');
+    if (!moreButton) throw new Error('More button not found');
+
+    await moreButton.click();
+    await this.page!.waitForSelector('[data-testid="Dropdown"]');
+
+    const blockButton = await this.page!.$('[data-testid="block"]');
+    if (!blockButton) throw new Error('Block button not found');
+
+    await blockButton.click();
+    await this.page!.waitForSelector('[data-testid="confirmationSheetDialog"]');
+
+    const shouldBlock = await this.promptYesOrNo(`Block ${username}?`);
+    if (shouldBlock) {
+      const confirmButton = await this.page!.$('[data-testid="confirmationSheetConfirm"]');
+      if (!confirmButton) throw new Error('Confirm button not found');
+      await confirmButton.click();
+      console.log(`Blocked follower: ${username}`);
+    } else {
+      const cancelButton = await this.page!.$('[data-testid="confirmationSheetCancel"]');
+      if (!cancelButton) throw new Error('Cancel button not found');
+      await cancelButton.click();
+      console.log(`Cancelled blocking follower: ${username}`);
+    }
+
+    await this.page!.waitForTimeout(1000); // Wait for the dialog to close
   }
 
   private async removeFollower(username: string): Promise<void> {
