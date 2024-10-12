@@ -125,19 +125,42 @@ export class XBotAPI {
     const scrollResult = await this.scrollToBottom();
     console.log(scrollResult);
 
+    console.log('Scrolling back to top...');
+    await this.page.evaluate(() => window.scrollTo(0, 0));
+
     const followers = await this.getFollowers();
     console.log(`Found ${followers.length} followers`);
 
-    for (const follower of followers) {
-      console.log(`Analyzing follower: ${follower}`);
-      const info = await this.getFollowerInfo(follower);
-      const action = this.analyzer.analyzeFollower(info);
+    let lastUsername = '';
+    let currentUsername = '';
 
-      if (action === 'block') {
-        await this.blockFollower(follower);
-      } else if (action === 'remove') {
-        // Implement remove functionality if needed
-        console.log(`Would remove follower: ${follower}`);
+    for (let i = 0; i < followers.length; i++) {
+      lastUsername = currentUsername;
+      currentUsername = followers[i];
+      console.log(`Analyzing follower ${i + 1}/${followers.length}: ${currentUsername}`);
+
+      try {
+        console.log(`Starting to get info for follower: ${currentUsername}`);
+        const info = await this.getFollowerInfo(currentUsername);
+        console.log(`Successfully got info for follower: ${currentUsername}`);
+        const action = this.analyzeFollower(info);
+        console.log(`Analysis result for ${currentUsername}: ${action}`);
+
+        if (action === 'block') {
+          await this.blockFollower(currentUsername);
+          // After blocking, navigate back to followers page and find the last analyzed user
+          await this.page!.goto(`https://twitter.com/${this.username}/followers`, { timeout: 60000 });
+          if (lastUsername) {
+            await this.scrollToUser(lastUsername);
+          } else {
+            await this.page!.evaluate(() => window.scrollTo(0, 0));
+          }
+        } else if (action === 'remove') {
+          await this.removeFollower(currentUsername);
+        }
+        // If action is 'keep', do nothing and continue to the next follower
+      } catch (error) {
+        console.error(`Error analyzing follower ${currentUsername}:`, error);
       }
     }
 
@@ -172,11 +195,11 @@ export class XBotAPI {
     const userCells = await this.page!.$$('[data-testid="UserCell"]');
     
     for (const userCell of userCells) {
-      const usernameElement = await userCell.$('div[dir="ltr"] span');
+      const usernameElement = await userCell.$('a[href^="/"]');
       if (usernameElement) {
-        const username = await usernameElement.evaluate(el => el.textContent);
-        if (username) {
-          followers.push(username.replace('@', ''));
+        const href = await usernameElement.evaluate(el => el.getAttribute('href'));
+        if (href) {
+          followers.push(href.slice(1)); // Remove the leading '/'
         }
       }
     }
@@ -186,44 +209,94 @@ export class XBotAPI {
   }
 
   private async getFollowerInfo(username: string): Promise<FollowerInfo> {
-    const userCell = await this.page!.$(`[data-testid="UserCell"]:has(a[href="/${username}"])`);
-    if (!userCell) throw new Error(`UserCell not found for ${username}`);
+    console.log(`Getting info for follower: ${username}`);
+    console.log(`Navigating to https://twitter.com/${username}...`);
+    try {
+      await this.page!.goto(`https://twitter.com/${username}`, { waitUntil: 'networkidle0', timeout: 30000 });
+      console.log(`Successfully loaded profile page for ${username}`);
+    } catch (error) {
+      console.error(`Error loading profile page for ${username}:`, error);
+      throw error;
+    }
 
-    const displayNameElement = await userCell.$('div[dir="ltr"] > div:first-child');
-    const handleElement = await userCell.$('div[dir="ltr"] > div:nth-child(2)');
-    const bioElement = await userCell.$('div[dir="auto"]');
+    console.log('Extracting follower information...');
+    const info = await this.page!.evaluate(() => {
+      console.log('Inside page.evaluate...');
+      const nameElement = document.querySelector('h2[aria-level="2"]');
+      console.log('Name element:', nameElement?.textContent);
 
-    const displayName = displayNameElement ? await displayNameElement.evaluate(el => el.textContent) : '';
-    const handle = handleElement ? await handleElement.evaluate(el => el.textContent) : '';
-    const bio = bioElement ? await bioElement.evaluate(el => el.textContent) : '';
+      const statsElements = document.querySelectorAll('span[data-testid="UserProfileHeader_Items"]');
+      console.log('Stats elements found:', statsElements.length);
 
-    // Other info like follower count, following count, etc. would need to be fetched differently
-    // as they're not directly available in the UserCell
+      const bioElement = document.querySelector('div[data-testid="UserDescription"]');
+      console.log('Bio element:', bioElement?.textContent);
 
-    return {
+      const followersElement = Array.from(statsElements).find(el => el.textContent?.includes('Followers'));
+      console.log('Followers element:', followersElement?.textContent);
+
+      const followingElement = Array.from(statsElements).find(el => el.textContent?.includes('Following'));
+      console.log('Following element:', followingElement?.textContent);
+
+      return {
+        name: nameElement?.textContent || '',
+        followerCount: followersElement ? parseInt(followersElement.textContent?.replace(/[^0-9]/g, '') || '0') : 0,
+        followingCount: followingElement ? parseInt(followingElement.textContent?.replace(/[^0-9]/g, '') || '0') : 0,
+        bio: bioElement?.textContent || '',
+      };
+    });
+
+    console.log('Extracted follower information:', info);
+
+    console.log(`Navigating back to followers page for ${this.username}...`);
+    try {
+      await this.page!.goto(`https://twitter.com/${this.username}/followers`, { waitUntil: 'networkidle0', timeout: 30000 });
+      console.log('Successfully returned to followers page');
+    } catch (error) {
+      console.error('Error returning to followers page:', error);
+      throw error;
+    }
+
+    const followerInfo: FollowerInfo = {
       username,
-      name: displayName || '',
-      followerCount: 0, // Placeholder
-      followingCount: 0, // Placeholder
+      ...info,
       createdAt: new Date(), // Placeholder
+      lastTweetDate: null, // Placeholder
       tweetCount: 0, // Placeholder
       retweetRatio: 0, // Placeholder
       linkRatio: 0, // Placeholder
       averageHashtagsPerTweet: 0, // Placeholder
       hasDefaultProfileImage: false, // Placeholder
-      bio: bio || '',
     };
+
+    console.log('Final follower info:', followerInfo);
+    return followerInfo;
+  }
+
+  private analyzeFollower(info: FollowerInfo): 'block' | 'remove' | 'keep' {
+    // Check for 5+ consecutive numbers in the username
+    const consecutiveNumbersRegex = /\d{5,}/;
+    if (consecutiveNumbersRegex.test(info.username)) {
+      return 'block';
+    }
+
+    // Check for weirdly high following vs follower ratio
+    const followRatio = info.followingCount / info.followerCount;
+    if (followRatio > 8 && info.followingCount > 800) {
+      return 'remove';
+    }
+
+    return 'keep';
   }
 
   private async blockFollower(username: string): Promise<void> {
-    const userCell = await this.page!.$(`[data-testid="UserCell"]:has(a[href="/${username}"])`);
-    if (!userCell) throw new Error(`UserCell not found for ${username}`);
+    console.log(`Attempting to block follower: ${username}`);
+    await this.page!.goto(`https://twitter.com/${username}`, { waitUntil: 'networkidle0' });
 
-    const moreButton = await userCell.$('button[aria-label="More"]');
-    if (!moreButton) throw new Error('More button not found');
+    const userActionsButton = await this.page!.$('[data-testid="userActions"]');
+    if (!userActionsButton) throw new Error('User actions button not found');
 
-    await moreButton.click();
-    await this.page!.waitForSelector('[data-testid="Dropdown"]');
+    await userActionsButton.click();
+    await this.page!.waitForSelector('[data-testid="block"]');
 
     const blockButton = await this.page!.$('[data-testid="block"]');
     if (!blockButton) throw new Error('Block button not found');
@@ -244,18 +317,40 @@ export class XBotAPI {
       console.log(`Cancelled blocking follower: ${username}`);
     }
 
-    await this.page!.waitForTimeout(1000); // Wait for the dialog to close
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
 
   private async removeFollower(username: string): Promise<void> {
-    await this.blockFollower(username);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    await this.page!.click('div[data-testid="userActions"]');
-    await this.page!.waitForSelector('div[data-testid="unblock"]');
-    await this.page!.click('div[data-testid="unblock"]');
-    await this.page!.waitForSelector('div[data-testid="confirmationSheetConfirm"]');
-    await this.page!.click('div[data-testid="confirmationSheetConfirm"]');
-    console.log(`Removed follower: ${username}`);
+    console.log(`Attempting to remove follower: ${username}`);
+    const userCell = await this.page!.$(`[data-testid="UserCell"]:has(a[href="/${username}"])`);
+    if (!userCell) throw new Error(`UserCell not found for ${username}`);
+
+    const moreButton = await userCell.$('button[aria-label="More"]');
+    if (!moreButton) throw new Error('More button not found');
+
+    await moreButton.click();
+    await this.page!.waitForSelector('[data-testid="Dropdown"]');
+
+    const removeFollowerButton = await this.page!.$('[data-testid="removeFollower"]');
+    if (!removeFollowerButton) throw new Error('Remove follower button not found');
+
+    await removeFollowerButton.click();
+    await this.page!.waitForSelector('[data-testid="confirmationSheetDialog"]');
+
+    const shouldRemove = await this.promptYesOrNo(`Remove ${username} as a follower?`);
+    if (shouldRemove) {
+      const confirmButton = await this.page!.$('[data-testid="confirmationSheetConfirm"]');
+      if (!confirmButton) throw new Error('Confirm button not found');
+      await confirmButton.click();
+      console.log(`Removed follower: ${username}`);
+    } else {
+      const cancelButton = await this.page!.$('[data-testid="confirmationSheetCancel"]');
+      if (!cancelButton) throw new Error('Cancel button not found');
+      await cancelButton.click();
+      console.log(`Cancelled removing follower: ${username}`);
+    }
+
+    await this.page!.waitForTimeout(1000); // Wait for the dialog to close
   }
 
   private async randomDelay(min: number, max: number): Promise<void> {
@@ -266,6 +361,20 @@ export class XBotAPI {
   private async typeWithRandomDelay(selector: string, text: string): Promise<void> {
     for (const char of text) {
       await this.page!.type(selector, char, { delay: Math.random() * 100 + 50 });
+    }
+  }
+
+  private async scrollToUser(username: string): Promise<void> {
+    let found = false;
+    while (!found) {
+      const userCell = await this.page!.$(`[data-testid="UserCell"]:has(a[href="/${username}"])`);
+      if (userCell) {
+        found = true;
+        await userCell.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+      } else {
+        await this.page!.evaluate(() => window.scrollBy(0, window.innerHeight));
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
 }

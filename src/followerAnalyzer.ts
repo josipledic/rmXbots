@@ -47,7 +47,7 @@ export class FollowerAnalyzer {
 
   private isPossiblyBot(info: FollowerInfo): boolean {
     // Implement possible bot detection logic
-    if (info.lastTweetDate && this.isInactiveSixMonths(info.lastTweetDate)) {
+    if (info.lastTweetDate && this.isInactiveSixMonths(info.lastTweetDate || new Date())) {
       return true;
     }
 

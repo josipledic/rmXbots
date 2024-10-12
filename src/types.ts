@@ -3,12 +3,12 @@ export interface FollowerInfo {
   name: string;
   followerCount: number;
   followingCount: number;
-  lastTweetDate?: Date;
-  createdAt: Date;
-  tweetCount: number;
-  retweetRatio: number;
-  linkRatio: number;
-  averageHashtagsPerTweet: number;
-  hasDefaultProfileImage: boolean;
   bio: string;
+  createdAt: Date; // Placeholder
+  lastTweetDate: Date | null; // Placeholder
+  tweetCount: number; // Placeholder
+  retweetRatio: number; // Placeholder
+  linkRatio: number; // Placeholder
+  averageHashtagsPerTweet: number; // Placeholder
+  hasDefaultProfileImage: boolean; // Placeholder
 }
